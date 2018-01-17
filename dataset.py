@@ -19,14 +19,29 @@ import mmh3
 AUDIO_EXTENSIONS = ['.wav']
 
 NUM_FOLDS = 10
-SILENCE_LABEL = '_silence_'
+SILENCE_LABEL = 'silence'
 SILENCE_INDEX = 0
-UNKNOWN_WORD_LABEL = '_unknown_'
+UNKNOWN_WORD_LABEL = 'unknown'
 UNKNOWN_WORD_INDEX = 1
 BACKGROUND_NOISE_DIR_NAME = '_background_noise_'
 KNOWN_LABELS = ['yes', 'no', 'up', 'down', 'left', 'right', 'on', 'off', 'stop', 'go']
-BACKGROUND_LABELS = [SILENCE_LABEL, UNKNOWN_WORD_LABEL]
-ALL_LABELS = BACKGROUND_LABELS + KNOWN_LABELS
+UNKNOWN_LABELS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+                  'bird', 'dog', 'cat', 'bed', 'house', 'tree', 'marvin', 'sheila', 'happy', 'wow']
+
+
+def get_labels(train_unknown=True):
+    if train_unknown:
+        """
+        Train the 'unknown' class by using all training set words
+        that aren't in the known set
+        """
+        foreground_labels = KNOWN_LABELS
+        background_labels = [SILENCE_LABEL, UNKNOWN_WORD_LABEL]
+    else:
+        foreground_labels = KNOWN_LABELS + UNKNOWN_LABELS
+        background_labels = [SILENCE_LABEL]
+    all_labels = background_labels + foreground_labels
+    return all_labels
 
 
 def find_commands(folder, types=AUDIO_EXTENSIONS):
@@ -69,6 +84,7 @@ class CommandsDataset(data.Dataset):
             fold=0,
             wav_size=16000,
             format='raw',
+            train_unknown=True,
             test_aug=0,
             transform=None):
 
@@ -79,32 +95,31 @@ class CommandsDataset(data.Dataset):
         assert self.fold < NUM_FOLDS
         self.wav_size = wav_size
         self.format = format
+        self.train_unknown = train_unknown
 
         # Training settings, TODO make dict, source from cmd args
-        self.silence_prob = 0.1
-        self.unknown_prob = 0.11
+        self.silence_prob = 0.11
+        self.unknown_prob = 0.11 if train_unknown else 0.0
         self.background_frequency = 0.7
         self.background_volume_range = 0.25
-        self.pitch_shift = 1.0
-        self.pitch_shift_frequency = 0.4
-        self.time_stretch = 0.133
+        self.pitch_shift = 0.5
+        self.pitch_shift_frequency = 0.0
+        self.time_stretch = 0.15
         self.time_stretch_frequency = 0.5
-        self.time_shift = 0.2
-
-        # Spectrogram params
-        self.spect_mean = -6.22
-        self.spect_std = 65.33
+        self.time_shift = 0.22
 
         # Find dataset input files
         commands, background = find_commands(root)
         print(len(commands), len(background))
 
-        self.label_to_id = {l: i for i, l in enumerate(ALL_LABELS)}
-        self.id_to_label = ALL_LABELS
-        self.id_to_label[SILENCE_INDEX] = 'silence'
-        self.id_to_label[UNKNOWN_WORD_INDEX] = 'unknown'  # this mapping used for output
         self.targets = []
         self.inputs = []
+        self.class_inputs = OrderedDict()
+        self.label_to_id = {}
+        self.id_to_label = get_labels(train_unknown=train_unknown)
+        for i, l in enumerate(self.id_to_label):
+            self.label_to_id[l] = i
+            self.class_inputs[i] = []
         self.background_data =[]
         if mode == 'test':
             for _, _, _, f in commands:
@@ -114,7 +129,7 @@ class CommandsDataset(data.Dataset):
         else:
             self.unknowns = []
             self.num_known = 0
-
+            index = 0
             for s, u, l, f in commands:
                 sf = speaker_to_fold(s)
                 if mode == 'validate':
@@ -124,26 +139,37 @@ class CommandsDataset(data.Dataset):
                     if sf == fold:
                         continue
                 if l in self.label_to_id:
-                    self.targets.append(self.label_to_id[l])
+                    lid = self.label_to_id[l]
+                    self.targets.append(lid)
                     self.inputs.append(f)
+                    self.class_inputs[lid].append(index)
+                    index += 1
                 else:
+                    assert train_unknown
                     self.unknowns.append(f)
 
             # handle unknown/silence sampling inline so no need for external sampler
             self.num_known = len(self.inputs)
             known_prob = 1.0 - (self.silence_prob + self.unknown_prob)
             dataset_size = int(self.num_known / known_prob)
-            unknown_size = int(dataset_size * self.unknown_prob)
+            if train_unknown:
+                unknown_size = int(dataset_size * self.unknown_prob)
+            else:
+                unknown_size = 0
             silence_size = int(dataset_size * self.silence_prob)
             if silence_size:
-                self.inputs += [SILENCE_LABEL] * silence_size
+                self.inputs += [self.id_to_label[SILENCE_INDEX]] * silence_size
                 self.targets += [SILENCE_INDEX] * silence_size
+                self.class_inputs[SILENCE_INDEX] += list(range(index, index + silence_size))
+                index += silence_size
             if unknown_size:
                 if self.is_training:
-                    self.inputs += [UNKNOWN_WORD_LABEL] * unknown_size
+                    self.inputs += [self.id_to_label[UNKNOWN_WORD_INDEX]] * unknown_size
                 else:
                     self.inputs += list(np.random.choice(self.unknowns, unknown_size, replace=False))
                 self.targets += [UNKNOWN_WORD_INDEX] * unknown_size
+                self.class_inputs[UNKNOWN_WORD_INDEX] += list(range(index, index + unknown_size))
+                index += unknown_size
             print(dataset_size, silence_size, unknown_size, known_prob)
             self.inputs = np.array(self.inputs)
             self.targets = np.array(self.targets)
@@ -151,8 +177,6 @@ class CommandsDataset(data.Dataset):
             #np.random.shuffle(shuffle_index)
             #self.inputs = self.inputs[shuffle_index]
             #self.targets = self.targets[shuffle_index]
-            #for f in self.inputs:
-            #    print(f)
             for b in background:
                 wav_audio, wav_rate = lr.load(b)
                 self.background_data.append(wav_audio)
@@ -177,7 +201,8 @@ class CommandsDataset(data.Dataset):
         else:
             foreground_volume = np.random.uniform(0.8, 1.0) if self.is_training else 1.0
 
-        if target == UNKNOWN_WORD_INDEX and filename == UNKNOWN_WORD_LABEL:
+        if self.train_unknown and (
+                target == UNKNOWN_WORD_INDEX and filename == UNKNOWN_WORD_LABEL):
             filename = self.unknowns[np.random.randint(len(self.unknowns))]
 
         sample_rate = 16000
@@ -313,9 +338,32 @@ class CommandsDataset(data.Dataset):
             return abs_filename
 
 
+class PKSampler(Sampler):
+
+    def __init__(self, data_source, p=8, k=64):
+        self.p = p
+        self.k = k
+        self.data_source = data_source
+
+    def __iter__(self):
+        pk_count = len(self) // (self.p * self.k)
+        print(pk_count)
+        for _ in range(pk_count):
+            classes = torch.multinomial(
+                torch.arange(len(self.data_source.class_inputs.keys())), self.p)
+            for c in classes:
+                inputs = self.data_source.class_inputs[c]
+                for i in torch.randperm(len(inputs)).long()[:self.k]:
+                    yield inputs[i]
+
+    def __len__(self):
+        pk = self.p * self.k
+        return ((len(self.data_source) - 1) // pk + 1) * pk
+
+
 def _test():
     ds = CommandsDataset(
-        root='/data/f/commands/train/audio')
+        root='./commands/train/audio')
     print(ds.inputs)
 
 

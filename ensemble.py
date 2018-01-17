@@ -5,18 +5,9 @@ import numpy as np
 import pandas as pd
 import dataset
 
-parser = argparse.ArgumentParser(description='PyTorch Amazon Inference')
+parser = argparse.ArgumentParser(description='Ensembler')
 parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
-parser.add_argument('-t, --type', default='vote', type=str, metavar='TYPE',
-                    help='Type of ensemble: vote, geometric, arithmetic (default: "vote"')
-parser.add_argument('--multi-label', action='store_true', default=False,
-                    help='multi-label target')
-parser.add_argument('--tif', action='store_true', default=False,
-                    help='Use tif dataset')
-
-
-submission_col = ['fname', 'label']
 
 
 def find_inputs(folder, filter=['results.csv']):
@@ -33,26 +24,24 @@ def find_inputs(folder, filter=['results.csv']):
 def main():
     args = parser.parse_args()
 
+    id_to_label = dataset.get_labels()
     results = find_inputs(args.data, filter=['results.csv'])
     dfs = []
     for r in results:
         df = pd.read_csv(r[1], index_col=None)
         df = df.set_index('fname')
         dfs.append(df)
-
     all = pd.concat(dfs)
-
-    id_to_label = dataset.ALL_LABELS
-    id_to_label[dataset.SILENCE_INDEX] = 'silence'
-    id_to_label[dataset.UNKNOWN_WORD_INDEX] = 'unknown'  # this mapping used for output
 
     sum = all.groupby(['fname']).sum()
     sum /= len(dfs)
     sum_arr = sum.as_matrix()
     fnames = sum.index.values
-    idx = np.argmax(sum_arr, axis=1)
-    log_probs = sum_arr[np.arange(len(idx)), idx]
-    probs = np.exp(log_probs)
+    probs_arr = np.exp(sum_arr)
+    #probs_arr[:, 0] += 0.3
+    #probs_arr[:, 1] += 0.16
+    idx = np.argmax(probs_arr, axis=1)
+    probs = probs_arr[np.arange(len(idx)), idx]
     labels = np.array(id_to_label)[idx]
     ensemble = pd.DataFrame(
         data={'fname': fnames, 'label': labels, 'prob': probs}, columns=['fname', 'label', 'prob'])

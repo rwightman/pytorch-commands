@@ -1,18 +1,14 @@
 import argparse
-import zlib
 import io
 import os
 import csv
-import struct
-import shutil
 import time
-import glob
 import numpy as np
 import pandas as pd
 from collections import OrderedDict
 from datetime import datetime
 
-from dataset import CommandsDataset
+from dataset import CommandsDataset, get_labels
 from models import model_factory
 from utils import AverageMeter, get_outdir
 
@@ -23,11 +19,6 @@ import torch.nn.functional as F
 import torch.utils.data as data
 import torchvision.utils
 
-try:
-    import lmdb
-    has_lmdb = True
-except ImportError:
-    has_lmdb = False
 
 parser = argparse.ArgumentParser(description='Inference')
 parser.add_argument('data', metavar='DIR',
@@ -40,8 +31,6 @@ parser.add_argument('--tta', type=int, default=0, metavar='N',
                     help='Test/inference time augmentation (oversampling) factor. 0=None (default: 0)')
 parser.add_argument('--pretrained', action='store_true', default=False,
                     help='Start with pretrained version of specified network (if avail)')
-parser.add_argument('--img-size', type=int, default=180, metavar='N',
-                    help='Image patch size (default: 180)')
 parser.add_argument('-b', '--batch-size', type=int, default=512, metavar='N',
                     help='input batch size for training (default: 512)')
 parser.add_argument('-j', '--workers', type=int, default=2, metavar='N',
@@ -61,16 +50,7 @@ parser.add_argument('--output', default='', type=str, metavar='PATH',
 def main():
     args = parser.parse_args()
 
-    img_size = (args.img_size, args.img_size)
-    num_classes = 12
-
-    #if 'inception' in args.model:
-    #    num_classes_init = 1001
-    #    normalize = 'le'
-    #else:
-    #    num_classes_init = 1000
-    #    normalize = 'torchvision'
-
+    num_classes = len(get_labels())
     test_time_pool = 0 #5 if 'dpn' in args.model else 0
 
     model = model_factory.create_model(
@@ -125,11 +105,8 @@ def main():
     )
 
     model.eval()
-
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
-
-
     try:
         # open CSV for writing predictions
         cf = open(os.path.join(output_dir, 'results.csv'), mode='w')

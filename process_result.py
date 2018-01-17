@@ -26,7 +26,11 @@ parser.add_argument(
 parser.add_argument(
     '-t', '--thresh',
     type=float,
-    default=0.3)
+    default=0.2)
+parser.add_argument(
+    '-c', '--boost_class',
+    type=str,
+    default='silence')
 
 
 def main():
@@ -45,13 +49,14 @@ def main():
     results['label'] = results['label'].map(
         lambda x: x if x in accept else 'unknown')
     results['label'] = results.apply(
-        lambda x: x['label'] if x['prob'] >= args.thresh else 'silence', axis=1)
+        lambda x: x['label'] if x['prob'] >= args.thresh else args.boost_class, axis=1)
     results = results[['fname', 'label']]
     results.to_csv(args.output, index=False)
 
     g = results.groupby(['label'])
     for i, c in g['fname'].count().iteritems():
         print("%s\t%d\t%f" % (i, c, 100 * c / total))
+
 
 if __name__ == '__main__':
     main()
