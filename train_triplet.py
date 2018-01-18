@@ -9,8 +9,9 @@ from datetime import datetime
 import dataset
 from models import model_factory
 from lr_scheduler import ReduceLROnPlateau
-from utils import AverageMeter, CheckpointSaver, get_outdir, accuracy
+from utils import AverageMeter, CheckpointSaver, get_outdir
 from optim import nadam
+from triplet_loss import TripletLoss
 
 import torch
 import torch.autograd as autograd
@@ -39,6 +40,8 @@ parser.add_argument('--labels', default='all', type=str, metavar='NAME',
                     help='Label set (default: "all"')
 parser.add_argument('--pretrained', action='store_true', default=False,
                     help='Start with pretrained version of specified network (if avail)')
+parser.add_argument('--img-size', type=int, default=224, metavar='N',
+                    help='Image patch size (default: 224)')
 parser.add_argument('--multi-target', '--mt', type=int, default=0, metavar='N',
                     help='multi-target classifier count (default: 0)')
 parser.add_argument('-b', '--batch-size', type=int, default=32, metavar='N',
@@ -107,7 +110,7 @@ def main():
     batch_size = args.batch_size
     num_epochs = args.epochs
     wav_size = (16000,)
-    num_classes = len(dataset.get_labels())
+    num_classes = 128  # triplet embedding size
 
     torch.manual_seed(args.seed)
 
@@ -118,6 +121,7 @@ def main():
         num_classes=num_classes,
         drop_rate=args.drop,
         global_pool=args.gp,
+        output_norm=2.0,
         checkpoint_path=args.initial_checkpoint)
     #model.reset_classifier(num_classes=num_classes)
 
@@ -127,13 +131,14 @@ def main():
         fold=args.fold,
         wav_size=wav_size,
         format='spectrogram',
+        train_unknown=False,
     )
 
     loader_train = data.DataLoader(
         dataset_train,
         batch_size=batch_size,
         pin_memory=True,
-        shuffle=True,
+        sampler=dataset.PKSampler(dataset_train, p=8, k=64),
         num_workers=args.workers
     )
 
@@ -143,17 +148,18 @@ def main():
         fold=args.fold,
         wav_size=wav_size,
         format='spectrogram',
+        train_unknown=False,
     )
 
     loader_eval = data.DataLoader(
         dataset_eval,
         batch_size=args.batch_size,
         pin_memory=True,
-        shuffle=False,
+        sampler=dataset.PKSampler(dataset_eval, p=8, k=64),
         num_workers=args.workers
     )
 
-    train_loss_fn = validate_loss_fn = torch.nn.CrossEntropyLoss()
+    train_loss_fn = validate_loss_fn = TripletLoss()
     train_loss_fn = train_loss_fn.cuda()
     validate_loss_fn = validate_loss_fn.cuda()
 
@@ -220,33 +226,6 @@ def main():
         model = torch.nn.DataParallel(model, device_ids=list(range(args.num_gpu))).cuda()
     else:
         model.cuda()
-
-    # Optional fine-tune of only the final classifier weights for specified number of epochs (or part of)
-    if not args.resume and args.ft_epochs > 0.:
-        if isinstance(model, torch.nn.DataParallel):
-            classifier_params = model.module.get_classifier().parameters()
-        else:
-            classifier_params = model.get_classifier().parameters()
-        if args.opt.lower() == 'adam':
-            finetune_optimizer = optim.Adam(
-                classifier_params,
-                lr=args.ft_lr, weight_decay=args.weight_decay)
-        else:
-            finetune_optimizer = optim.SGD(
-                classifier_params,
-                lr=args.ft_lr, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
-
-        finetune_epochs_int = int(np.ceil(args.ft_epochs))
-        finetune_final_batches = int(np.ceil((1 - (finetune_epochs_int - args.ft_epochs)) * len(loader_train)))
-        print(finetune_epochs_int, finetune_final_batches)
-        for fepoch in range(0, finetune_epochs_int):
-            if fepoch == finetune_epochs_int - 1 and finetune_final_batches:
-                batch_limit = finetune_final_batches
-            else:
-                batch_limit = 0
-            train_epoch(
-                fepoch, model, loader_train, finetune_optimizer, train_loss_fn, args,
-                output_dir=output_dir, batch_limit=batch_limit)
 
     best_loss = None
     try:
@@ -315,6 +294,7 @@ def train_epoch(
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
     losses_m = AverageMeter()
+    prec_m = AverageMeter()
 
     model.train()
 
@@ -333,8 +313,10 @@ def train_epoch(
 
         output = model(input_var)
 
-        loss = loss_fn(output, target_var)
+        loss, prec = loss_fn(output, target_var)
+
         losses_m.update(loss.data[0], input_var.size(0))
+        prec_m.update(prec, input_var.size(0))
 
         optimizer.zero_grad()
         loss.backward()
@@ -345,6 +327,7 @@ def train_epoch(
         if last_batch or batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]  '
                   'Loss: {loss.val:.6f} ({loss.avg:.4f})  '
+                  'Prec {prec.val:.4f} ({prec.avg:.4f})  '
                   'Time: {batch_time.val:.3f}s, {rate:.3f}/s  '
                   '({batch_time.avg:.3f}s, {rate_avg:.3f}/s)  '
                   'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
@@ -352,6 +335,7 @@ def train_epoch(
                 sample_idx, len(loader.sampler),
                 100. * sample_idx / len(loader.sampler),
                 loss=losses_m,
+                prec=prec_m,
                 batch_time=batch_time_m,
                 rate=input_var.size(0) / batch_time_m.val,
                 rate_avg=input_var.size(0) / batch_time_m.avg,
@@ -413,13 +397,13 @@ def validate(step, model, loader, loss_fn, args, output_dir=''):
         #    target_var.data = target_var.data[0:target_var.size(0):reduce_factor]
 
         # calc loss
-        loss = loss_fn(output, target_var)
+        loss, prec1 = loss_fn(output, target_var)
         losses_m.update(loss.data[0], input.size(0))
 
         # metrics
-        prec1, prec3 = accuracy(output.data, target_var.data, topk=(1, 3))
-        prec1_m.update(prec1[0], output.size(0))
-        prec3_m.update(prec3[0], output.size(0))
+        #prec1, prec3 = accuracy(output.data, target_var.data, topk=(1, 3))
+        prec1_m.update(prec1, output.size(0))
+        #prec3_m.update(prec3[0], output.size(0))
 
         batch_time_m.update(time.time() - end)
         end = time.time()
@@ -457,6 +441,22 @@ def adjust_learning_rate(optimizer, epoch, initial_lr, decay_rate=0.1, decay_epo
 def adjust_batch_size(epoch, initial_bs, target_bs, decay_epochs=1):
     batch_size = min(target_bs, initial_bs * (2 ** (epoch // decay_epochs)))
     return batch_size
+
+
+def accuracy(output, target, topk=(1,)):
+    """Computes the precision@k for the specified values of k"""
+    maxk = max(topk)
+    batch_size = target.size(0)
+
+    _, pred = output.topk(maxk, 1, True, True)
+    pred = pred.t()
+    correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+    res = []
+    for k in topk:
+        correct_k = correct[:k].view(-1).float().sum(0)
+        res.append(correct_k.mul_(100.0 / batch_size))
+    return res
 
 
 if __name__ == '__main__':
