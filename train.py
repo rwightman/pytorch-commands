@@ -71,7 +71,7 @@ parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
 parser.add_argument('--recovery-interval', type=int, default=1000, metavar='N',
                     help='how many batches to wait before writing recovery checkpoint')
-parser.add_argument('-j', '--workers', type=int, default=4, metavar='N',
+parser.add_argument('-j', '--workers', type=int, default=3, metavar='N',
                     help='how many training processes to use (default: 1)')
 parser.add_argument('--num-gpu', type=int, default=1,
                     help='Number of GPUS to use')
@@ -325,22 +325,22 @@ def train_epoch(
         step = epoch_step + batch_idx
         data_time_m.update(time.time() - end)
 
-        input_var = autograd.Variable(input.cuda())
+        input = input.cuda()
         if isinstance(target, list):
-            target_var = [autograd.Variable(t.cuda()) for t in target]
+            target = [t.cuda() for t in target]
         else:
-            target_var = autograd.Variable(target.cuda())
+            target = target.cuda()
 
-        output = model(input_var)
+        output = model(input)
 
-        loss = loss_fn(output, target_var)
-        losses_m.update(loss.data[0], input_var.size(0))
+        loss = loss_fn(output, target)
+        losses_m.update(loss.item(), input.size(0))
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        sample_idx += input_var.size(0)
+        sample_idx += input.size(0)
         batch_time_m.update(time.time() - end)
         if last_batch or batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]  '
@@ -353,8 +353,8 @@ def train_epoch(
                 100. * sample_idx / len(loader.sampler),
                 loss=losses_m,
                 batch_time=batch_time_m,
-                rate=input_var.size(0) / batch_time_m.val,
-                rate_avg=input_var.size(0) / batch_time_m.avg,
+                rate=input.size(0) / batch_time_m.val,
+                rate_avg=input.size(0) / batch_time_m.avg,
                 data_time=data_time_m))
 
             if args.save_batches:
@@ -396,30 +396,31 @@ def validate(step, model, loader, loss_fn, args, output_dir=''):
     sample_idx = 0
     for i, (input, target) in enumerate(loader):
         last_batch = i == len(loader) - 1
-        input_var = autograd.Variable(input.cuda(), volatile=True)
-        if isinstance(target, list):
-            target = target[0]
-        target_var = autograd.Variable(target.cuda(), volatile=True)
 
-        output = model(input_var)
+        with torch.no_grad():
+            input = input.cuda()
+            if isinstance(target, list):
+                target = target[0]
+            target = target.cuda()
 
-        if isinstance(output, list):
-            output = output[0]
+            output = model(input)
 
-        # augmentation reduction
-        #reduce_factor = loader.dataset.get_aug_factor()
-        #if reduce_factor > 1:
-        #    output.data = output.data.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
-        #    target_var.data = target_var.data[0:target_var.size(0):reduce_factor]
+            if isinstance(output, list):
+                output = output[0]
 
-        # calc loss
-        loss = loss_fn(output, target_var)
-        losses_m.update(loss.data[0], input.size(0))
+            # augmentation reduction
+            #reduce_factor = loader.dataset.get_aug_factor()
+            #if reduce_factor > 1:
+            #    output.data = output.data.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+            #    target_var.data = target_var.data[0:target_var.size(0):reduce_factor]
 
-        # metrics
-        prec1, prec3 = accuracy(output.data, target_var.data, topk=(1, 3))
-        prec1_m.update(prec1[0], output.size(0))
-        prec3_m.update(prec3[0], output.size(0))
+            # calc loss
+            loss = loss_fn(output, target)
+            prec1, prec3 = accuracy(output, target, topk=(1, 3))
+
+        losses_m.update(loss.item(), input.size(0))
+        prec1_m.update(prec1.item(), output.size(0))
+        prec3_m.update(prec3.item(), output.size(0))
 
         batch_time_m.update(time.time() - end)
         end = time.time()
