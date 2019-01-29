@@ -110,7 +110,7 @@ class CommandsDataset(data.Dataset):
 
         # Find dataset input files
         commands, background = find_commands(root)
-        print(len(commands), len(background))
+        print('Found %d command samples and %d background samples.' % (len(commands), len(background)))
 
         self.targets = []
         self.inputs = []
@@ -145,7 +145,6 @@ class CommandsDataset(data.Dataset):
                     self.class_inputs[lid].append(index)
                     index += 1
                 else:
-                    assert train_unknown
                     self.unknowns.append(f)
 
             # handle unknown/silence sampling inline so no need for external sampler
@@ -173,10 +172,7 @@ class CommandsDataset(data.Dataset):
             print(dataset_size, silence_size, unknown_size, known_prob)
             self.inputs = np.array(self.inputs)
             self.targets = np.array(self.targets)
-            #shuffle_index = np.arange(self.inputs.shape[0])
-            #np.random.shuffle(shuffle_index)
-            #self.inputs = self.inputs[shuffle_index]
-            #self.targets = self.targets[shuffle_index]
+
             for b in background:
                 wav_audio, wav_rate = lr.load(b)
                 self.background_data.append(wav_audio)
@@ -340,25 +336,25 @@ class CommandsDataset(data.Dataset):
 
 class PKSampler(Sampler):
 
-    def __init__(self, data_source, p=8, k=64):
+    def __init__(self, dataset, p=8, k=64):
         self.p = p
         self.k = k
-        self.data_source = data_source
+        self.dataset = dataset
 
     def __iter__(self):
         pk_count = len(self) // (self.p * self.k)
         print(pk_count)
         for _ in range(pk_count):
-            classes = torch.multinomial(
-                torch.arange(len(self.data_source.class_inputs.keys())), self.p)
+            classes = np.random.choice(
+                np.arange(len(self.dataset.class_inputs.keys())), self.p, replace=False)
             for c in classes:
-                inputs = self.data_source.class_inputs[c]
-                for i in torch.randperm(len(inputs)).long()[:self.k]:
+                inputs = self.dataset.class_inputs[c]
+                for i in np.random.permutation(len(inputs))[:self.k]:
                     yield inputs[i]
 
     def __len__(self):
         pk = self.p * self.k
-        return ((len(self.data_source) - 1) // pk + 1) * pk
+        return ((len(self.dataset) - 1) // pk + 1) * pk
 
 
 def _test():

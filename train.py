@@ -411,8 +411,8 @@ def validate(step, model, loader, loss_fn, args, output_dir=''):
             # augmentation reduction
             #reduce_factor = loader.dataset.get_aug_factor()
             #if reduce_factor > 1:
-            #    output.data = output.data.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
-            #    target_var.data = target_var.data[0:target_var.size(0):reduce_factor]
+            #    output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+            #    target = target[0:target_var.size(0):reduce_factor]
 
             # calc loss
             loss = loss_fn(output, target)

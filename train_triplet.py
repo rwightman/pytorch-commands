@@ -26,7 +26,7 @@ parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
 parser.add_argument('--model', default='resnet18', type=str, metavar='MODEL',
                     help='Name of model to train (default: "countception"')
-parser.add_argument('--opt', default='sgd', type=str, metavar='OPTIMIZER',
+parser.add_argument('--opt', default='adam', type=str, metavar='OPTIMIZER',
                     help='Optimizer (default: "sgd"')
 parser.add_argument('--opt-eps', default=1e-8, type=float, metavar='EPSILON',
                     help='Optimizer Epsilon (default: 1e-8)')
@@ -44,22 +44,18 @@ parser.add_argument('--img-size', type=int, default=224, metavar='N',
                     help='Image patch size (default: 224)')
 parser.add_argument('--multi-target', '--mt', type=int, default=0, metavar='N',
                     help='multi-target classifier count (default: 0)')
-parser.add_argument('-b', '--batch-size', type=int, default=32, metavar='N',
-                    help='input batch size for training (default: 32)')
-parser.add_argument('--epochs', type=int, default=200, metavar='N',
+parser.add_argument('-p', type=int, default=16, metavar='N',
+                    help='input classes per batch for training (default: 16)')
+parser.add_argument('-k',  type=int, default=64, metavar='N',
+                    help='input samples per class per batch for training (default: 64)')
+parser.add_argument('--epochs', type=int, default=250, metavar='N',
                     help='number of epochs to train (default: 2)')
 parser.add_argument('--start-epoch', default=None, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--decay-epochs', type=int, default=15, metavar='N',
+parser.add_argument('--decay-epochs', type=int, default=25, metavar='N',
                     help='epoch interval to decay LR')
 parser.add_argument('--decay-rate', '--dr', type=float, default=0.1, metavar='RATE',
                     help='LR decay rate (default: 0.1)')
-parser.add_argument('--ft-epochs', type=float, default=0., metavar='LR',
-                    help='Number of finetuning epochs (final layer only)')
-parser.add_argument('--ft-opt', default='sgd', type=str, metavar='OPTIMIZER',
-                    help='Optimizer (default: "sgd"')
-parser.add_argument('--ft-lr', type=float, default=0.0001, metavar='N',
-                    help='Finetune learning rates.')
 parser.add_argument('--drop', type=float, default=0.5, metavar='DROP',
                     help='Dropout rate (default: 0.1)')
 parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
@@ -82,7 +78,7 @@ parser.add_argument('--initial-checkpoint', default='', type=str, metavar='PATH'
                     help='path to init checkpoint (default: none)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
-parser.add_argument('--print-freq', '-p', default=10, type=int,
+parser.add_argument('--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--save-batches', action='store_true', default=False,
                     help='save images of batch inputs and targets every log interval for debugging/verification')
@@ -107,7 +103,7 @@ def main():
     output_dir = get_outdir(output_base, 'train', exp_name)
 
     train_input_root = os.path.join(args.data)
-    batch_size = args.batch_size
+    batch_size = args.p * args.k
     num_epochs = args.epochs
     wav_size = (16000,)
     num_classes = 128  # triplet embedding size
@@ -138,7 +134,7 @@ def main():
         dataset_train,
         batch_size=batch_size,
         pin_memory=True,
-        sampler=dataset.PKSampler(dataset_train, p=8, k=64),
+        sampler=dataset.PKSampler(dataset_train, p=args.p, k=args.k),
         num_workers=args.workers
     )
 
@@ -153,9 +149,9 @@ def main():
 
     loader_eval = data.DataLoader(
         dataset_eval,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         pin_memory=True,
-        sampler=dataset.PKSampler(dataset_eval, p=8, k=64),
+        sampler=dataset.PKSampler(dataset_eval, p=args.p, k=args.k),
         num_workers=args.workers
     )
 
@@ -283,7 +279,8 @@ def main():
 
     except KeyboardInterrupt:
         pass
-    print('*** Best loss: {0} (epoch {1})'.format(best_loss[1], best_loss[0]))
+    if best_loss is not None:
+        print('*** Best loss: {0} (epoch {1})'.format(best_loss[1], best_loss[0]))
 
 
 def train_epoch(
@@ -305,24 +302,24 @@ def train_epoch(
         step = epoch_step + batch_idx
         data_time_m.update(time.time() - end)
 
-        input_var = autograd.Variable(input.cuda())
+        input = input.cuda()
         if isinstance(target, list):
-            target_var = [autograd.Variable(t.cuda()) for t in target]
+            target = [t.cuda() for t in target]
         else:
-            target_var = autograd.Variable(target.cuda())
+            target = target.cuda()
 
-        output = model(input_var)
+        output = model(input)
 
-        loss, prec = loss_fn(output, target_var)
+        loss, prec = loss_fn(output, target)
 
-        losses_m.update(loss.data[0], input_var.size(0))
-        prec_m.update(prec, input_var.size(0))
+        losses_m.update(loss.item(), input.size(0))
+        prec_m.update(prec, input.size(0))
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        sample_idx += input_var.size(0)
+        sample_idx += input.size(0)
         batch_time_m.update(time.time() - end)
         if last_batch or batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]  '
@@ -337,8 +334,8 @@ def train_epoch(
                 loss=losses_m,
                 prec=prec_m,
                 batch_time=batch_time_m,
-                rate=input_var.size(0) / batch_time_m.val,
-                rate_avg=input_var.size(0) / batch_time_m.avg,
+                rate=input.size(0) / batch_time_m.val,
+                rate_avg=input.size(0) / batch_time_m.avg,
                 data_time=data_time_m))
 
             if args.save_batches:
@@ -380,30 +377,28 @@ def validate(step, model, loader, loss_fn, args, output_dir=''):
     sample_idx = 0
     for i, (input, target) in enumerate(loader):
         last_batch = i == len(loader) - 1
-        input_var = autograd.Variable(input.cuda(), volatile=True)
-        if isinstance(target, list):
-            target = target[0]
-        target_var = autograd.Variable(target.cuda(), volatile=True)
+        with torch.no_grad():
+            input = input.cuda()
+            if isinstance(target, list):
+                target = target[0]
+            target = target.cuda()
 
-        output = model(input_var)
+            output = model(input)
 
-        if isinstance(output, list):
-            output = output[0]
+            if isinstance(output, list):
+                output = output[0]
 
-        # augmentation reduction
-        #reduce_factor = loader.dataset.get_aug_factor()
-        #if reduce_factor > 1:
-        #    output.data = output.data.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
-        #    target_var.data = target_var.data[0:target_var.size(0):reduce_factor]
+            # augmentation reduction
+            #reduce_factor = loader.dataset.get_aug_factor()
+            #if reduce_factor > 1:
+            #    output.data = output.data.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+            #    target_var.data = target_var.data[0:target_var.size(0):reduce_factor]
 
-        # calc loss
-        loss, prec1 = loss_fn(output, target_var)
-        losses_m.update(loss.data[0], input.size(0))
+            # calc loss
+            loss, prec1 = loss_fn(output, target)
 
-        # metrics
-        #prec1, prec3 = accuracy(output.data, target_var.data, topk=(1, 3))
-        prec1_m.update(prec1, output.size(0))
-        #prec3_m.update(prec3[0], output.size(0))
+        losses_m.update(loss.item(), input.size(0))
+        prec1_m.update(prec1.item(), output.size(0))
 
         batch_time_m.update(time.time() - end)
         end = time.time()
@@ -436,11 +431,6 @@ def adjust_learning_rate(optimizer, epoch, initial_lr, decay_rate=0.1, decay_epo
     print('Setting LR to', lr)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-
-
-def adjust_batch_size(epoch, initial_bs, target_bs, decay_epochs=1):
-    batch_size = min(target_bs, initial_bs * (2 ** (epoch // decay_epochs)))
-    return batch_size
 
 
 def accuracy(output, target, topk=(1,)):

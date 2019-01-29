@@ -122,21 +122,21 @@ def main():
         batch_sample_idx = 0
         for batch_idx, (input, target) in enumerate(loader):
             data_time_m.update(time.time() - end)
-            input_var = autograd.Variable(input.cuda(), volatile=True)
-            output = model(input_var)
+            input = input.cuda()
+            output = model(input)
 
             # augmentation reduction
             #reduce_factor = loader.dataset.get_aug_factor()
             #if reduce_factor > 1:
-            #    output.data = output.data.unfold(0, reduce_factor, reduce_factor).mean(dim=2).squeeze(dim=2)
+            #    output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2).squeeze(dim=2)
             #    index = index[0:index.size(0):reduce_factor]
 
             # move data to CPU and collect)
-            output_logprob = F.log_softmax(output, dim=1).data.cpu().numpy()
+            output_logprob = F.log_softmax(output, dim=1).cpu().numpy()
             output = F.softmax(output, dim=1)
             output_prob, output_idx = output.max(1)
-            output_prob = output_prob.data.cpu().numpy()
-            output_idx = output_idx.data.cpu().numpy()
+            output_prob = output_prob.cpu().numpy()
+            output_idx = output_idx.cpu().numpy()
             for i in range(output_logprob.shape[0]):
                 index = batch_sample_idx + i
                 pred_label = dataset.id_to_label[output_idx[i]]
@@ -145,7 +145,7 @@ def main():
                 res_writer.writerow([filename] + list(output_logprob[i]))
                 sub_writer.writerow([filename] + [pred_label, pred_prob])
 
-            batch_sample_idx += input_var.size(0)
+            batch_sample_idx += input.size(0)
             batch_time_m.update(time.time() - end)
             if batch_idx % args.print_freq == 0:
                 print('Inference: [{}/{} ({:.0f}%)]  '
@@ -155,8 +155,8 @@ def main():
                     batch_sample_idx, len(loader.sampler),
                     100. * batch_idx / len(loader),
                     batch_time=batch_time_m,
-                    rate=input_var.size(0) / batch_time_m.val,
-                    rate_avg=input_var.size(0) / batch_time_m.avg,
+                    rate=input.size(0) / batch_time_m.val,
+                    rate_avg=input.size(0) / batch_time_m.avg,
                     data_time=data_time_m))
 
             end = time.time()
