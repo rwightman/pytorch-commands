@@ -14,12 +14,13 @@ from optim import nadam
 from triplet_loss import TripletLoss
 
 import torch
-import torch.autograd as autograd
 import torch.nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data as data
 import torchvision.utils
+
+torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser(description='Training')
 parser.add_argument('data', metavar='DIR',
@@ -117,9 +118,10 @@ def main():
         num_classes=num_classes,
         drop_rate=args.drop,
         global_pool=args.gp,
-        output_norm=2.0,
+        embedding_net=True,
+        embedding_norm=2.,
+        embedding_act_fn=torch.sigmoid,
         checkpoint_path=args.initial_checkpoint)
-    #model.reset_classifier(num_classes=num_classes)
 
     dataset_train = dataset.CommandsDataset(
         root=train_input_root,
@@ -155,7 +157,7 @@ def main():
         num_workers=args.workers
     )
 
-    train_loss_fn = validate_loss_fn = TripletLoss()
+    train_loss_fn = validate_loss_fn = TripletLoss(margin=0.5, sample=True)
     train_loss_fn = train_loss_fn.cuda()
     validate_loss_fn = validate_loss_fn.cuda()
 

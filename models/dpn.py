@@ -288,7 +288,6 @@ class DPN(nn.Module):
 
     def forward(self, x):
         x = self.features(x)
-        #print(x.size())
         if not self.training and self.test_time_pool:
             x = F.avg_pool2d(x, kernel_size=self.test_time_pool, stride=1)
             out = self.classifier(x)

@@ -108,13 +108,10 @@ class Bottleneck(nn.Module):
 class ResNet(nn.Module):
 
     def __init__(self, block, layers, in_chs=3, num_classes=1000,
-                 drop_rate=0.0, block_drop_rate=0.0,
-                 global_pool='avg', output_norm=0):
+                 drop_rate=0.0, block_drop_rate=0.0, global_pool='avg'):
         self.num_classes = num_classes
         self.inplanes = 64
         self.drop_rate = drop_rate
-        self.expansion = block.expansion
-        self.output_norm = output_norm
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(in_chs, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
@@ -160,7 +157,7 @@ class ResNet(nn.Module):
         self.num_classes = num_classes
         del self.fc
         if num_classes:
-            self.fc = nn.Linear(512 * self.expansion, num_classes)
+            self.fc = nn.Linear(self.num_features, num_classes)
         else:
             self.fc = None
 
@@ -185,8 +182,6 @@ class ResNet(nn.Module):
         if self.drop_rate > 0.:
             x = F.dropout(x, p=self.drop_rate, training=self.training)
         x = self.fc(x)
-        if self.output_norm:
-            x = torch.renorm(x, self.output_norm, 0, 1.0)
         return x
 
 

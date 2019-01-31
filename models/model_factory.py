@@ -3,7 +3,7 @@ from .wrn50_2 import wrn50_2
 from .my_densenet import densenet161, densenet121, densenet169, densenet201
 from .my_resnet import resnet18, resnet34, resnet50, resnet101, resnet152
 from .dpn import dpn68, dpn68b, dpn92, dpn98, dpn131, dpn107
-from .vgg import vgg11_bn, vgg13_bn, vgg16_bn
+from .embedding_net import EmbeddingNet
 from .load_checkpoint import load_checkpoint
 
 
@@ -23,12 +23,12 @@ def create_model(
         in_chs=3,
         num_classes=1000,
         checkpoint_path='',
+        embedding_net=False,
+        embedding_norm=2.0,
+        embedding_act_fn=None,
         **kwargs):
 
-    if 'test_time_pool' in kwargs:
-        test_time_pool = kwargs.pop('test_time_pool')
-    else:
-        test_time_pool = 0
+    test_time_pool = kwargs.pop('test_time_pool') if 'test_time_pool' in kwargs else 0
 
     if model_name == 'dpn68':
         model = dpn68(
@@ -68,12 +68,14 @@ def create_model(
         model = densenet201(in_chs=in_chs, num_classes=num_classes, pretrained=pretrained, **kwargs)
     elif model_name == 'wrn50':
         model = wrn50_2(in_chs=in_chs, num_classes=num_classes, pretrained=pretrained,  **kwargs)
-    elif model_name == 'vgg16':
-        model = vgg16_bn(in_chs=in_chs, num_classes=num_classes)
     else:
         assert False and "Invalid model"
 
     if checkpoint_path and not pretrained:
         load_checkpoint(model, checkpoint_path)
+
+    if embedding_net:
+        model.reset_classifier(0)  # delete original FC
+        model = EmbeddingNet(model, num_classes, act_fn=embedding_act_fn, norm=embedding_norm)
 
     return model

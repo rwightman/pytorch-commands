@@ -10,10 +10,10 @@ def pdist(v):
 
 
 class TripletLoss(nn.Module):
-    def __init__(self, margin=1.0):
+    def __init__(self, margin=1.0, sample=True):
         super(TripletLoss, self).__init__()
         self.margin = margin
-        self.sample = True
+        self.sample = sample
 
     def forward(self, inputs, targets):
         n = inputs.size(0)

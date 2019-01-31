@@ -74,6 +74,10 @@ class CheckpointSaver:
             self.checkpoint_files.append((save_path, metric))
             self.checkpoint_files = sorted(self.checkpoint_files, key=lambda x: x[1])
 
+            print("Current checkpoints:")
+            for c in self.checkpoint_files:
+                print(c)
+
             if metric is not None and (self.best_metric is None or metric < self.best_metric[1]):
                 self.best_metric = (epoch, metric)
                 shutil.copyfile(save_path, os.path.join(self.checkpoint_dir, 'model_best' + self.extension))
@@ -92,9 +96,6 @@ class CheckpointSaver:
             except Exception as e:
                 print('Exception (%s) while deleting checkpoint' % str(e))
         self.checkpoint_files = self.checkpoint_files[:delete_index]
-        print("Remaining checkpoints:")
-        for c in self.checkpoint_files:
-            print(c)
 
     def save_recovery(self, state, epoch, batch_idx):
         filename = '-'.join([self.recovery_prefix, str(epoch), str(batch_idx)]) + self.extension
