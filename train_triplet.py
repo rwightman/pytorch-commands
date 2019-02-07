@@ -28,7 +28,7 @@ parser.add_argument('data', metavar='DIR',
 parser.add_argument('--model', default='resnet18', type=str, metavar='MODEL',
                     help='Name of model to train (default: "countception"')
 parser.add_argument('--opt', default='adam', type=str, metavar='OPTIMIZER',
-                    help='Optimizer (default: "sgd"')
+                    help='Optimizer (default: "adam"')
 parser.add_argument('--opt-eps', default=1e-8, type=float, metavar='EPSILON',
                     help='Optimizer Epsilon (default: 1e-8)')
 parser.add_argument('--gp', default='avg', type=str, metavar='POOL',
@@ -45,22 +45,22 @@ parser.add_argument('--img-size', type=int, default=224, metavar='N',
                     help='Image patch size (default: 224)')
 parser.add_argument('--multi-target', '--mt', type=int, default=0, metavar='N',
                     help='multi-target classifier count (default: 0)')
-parser.add_argument('-p', type=int, default=16, metavar='N',
+parser.add_argument('-p', type=int, default=20, metavar='N',
                     help='input classes per batch for training (default: 16)')
 parser.add_argument('-k',  type=int, default=64, metavar='N',
                     help='input samples per class per batch for training (default: 64)')
-parser.add_argument('--epochs', type=int, default=250, metavar='N',
+parser.add_argument('--epochs', type=int, default=100, metavar='N',
                     help='number of epochs to train (default: 2)')
 parser.add_argument('--start-epoch', default=None, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--decay-epochs', type=int, default=25, metavar='N',
+parser.add_argument('--decay-epochs', type=int, default=30, metavar='N',
                     help='epoch interval to decay LR')
 parser.add_argument('--decay-rate', '--dr', type=float, default=0.1, metavar='RATE',
                     help='LR decay rate (default: 0.1)')
 parser.add_argument('--drop', type=float, default=0.5, metavar='DROP',
                     help='Dropout rate (default: 0.1)')
-parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
-                    help='learning rate (default: 0.01)')
+parser.add_argument('--lr', type=float, default=0.0001, metavar='LR',
+                    help='learning rate (default: 0.001)')
 parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
                     help='SGD momentum (default: 0.9)')
 parser.add_argument('--weight-decay', type=float, default=0.0005, metavar='M',
@@ -312,7 +312,8 @@ def train_epoch(
 
         output = model(input)
 
-        loss, prec = loss_fn(output, target)
+        loss, metrics = loss_fn(output, target)
+        prec = metrics['prec']
 
         losses_m.update(loss.item(), input.size(0))
         prec_m.update(prec, input.size(0))
@@ -371,7 +372,6 @@ def validate(step, model, loader, loss_fn, args, output_dir=''):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
     prec1_m = AverageMeter()
-    prec3_m = AverageMeter()
 
     model.eval()
 
@@ -397,10 +397,10 @@ def validate(step, model, loader, loss_fn, args, output_dir=''):
             #    target_var.data = target_var.data[0:target_var.size(0):reduce_factor]
 
             # calc loss
-            loss, prec1 = loss_fn(output, target)
+            loss, metrics = loss_fn(output, target)
 
         losses_m.update(loss.item(), input.size(0))
-        prec1_m.update(prec1.item(), output.size(0))
+        prec1_m.update(metrics['prec'], output.size(0))
 
         batch_time_m.update(time.time() - end)
         end = time.time()
@@ -409,11 +409,9 @@ def validate(step, model, loader, loss_fn, args, output_dir=''):
             print('Test: [{0}/{1}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})  '
                   'Loss {loss.val:.4f} ({loss.avg:.4f})  '
-                  'Prec@1 {top1.val:.4f} ({top1.avg:.4f})  '
-                  'Prec@3 {top5.val:.4f} ({top5.avg:.4f})'.format(
+                  'Prec@1 {top1.val:.4f} ({top1.avg:.4f})  '.format(
                 sample_idx, len(loader.sampler),
-                batch_time=batch_time_m, loss=losses_m,
-                top1=prec1_m, top5=prec3_m))
+                batch_time=batch_time_m, loss=losses_m, top1=prec1_m))
 
             if args.save_batches:
                 torchvision.utils.save_image(
@@ -433,22 +431,6 @@ def adjust_learning_rate(optimizer, epoch, initial_lr, decay_rate=0.1, decay_epo
     print('Setting LR to', lr)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-
-
-def accuracy(output, target, topk=(1,)):
-    """Computes the precision@k for the specified values of k"""
-    maxk = max(topk)
-    batch_size = target.size(0)
-
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-    res = []
-    for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0)
-        res.append(correct_k.mul_(100.0 / batch_size))
-    return res
 
 
 if __name__ == '__main__':

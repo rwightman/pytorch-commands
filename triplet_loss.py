@@ -1,7 +1,7 @@
 import torch
 from torch import nn
-from torch.autograd import Variable
 import torch.nn.functional as F
+from collections import OrderedDict
 
 
 def pdist(v):
@@ -14,10 +14,10 @@ class TripletLoss(nn.Module):
         super(TripletLoss, self).__init__()
         self.margin = margin
         self.sample = sample
+        self.debug = False
 
     def forward(self, inputs, targets):
         n = inputs.size(0)
-        #print(n, Counter(targets.cpu().numpy()))
 
         # pairwise distances
         dist = pdist(inputs)
@@ -50,14 +50,28 @@ class TripletLoss(nn.Module):
             diff = torch.clamp(diff + self.margin, min=0.)
         loss = diff.mean()
 
-        # precision stats, no impact on loss
-        _, top_idx = torch.topk(dist, k=2, largest=False)
-        top_idx = top_idx[:, 1:]
-        flat_idx = top_idx.squeeze() + n * torch.arange(n, out=torch.LongTensor()).cuda()
-        top1_is_same = torch.take(mask_pos, flat_idx)
-        prec = torch.mean(top1_is_same.float())
+        # calculate metrics, no impact on loss
+        metrics = OrderedDict()
+        with torch.no_grad():
+            _, top_idx = torch.topk(dist, k=2, largest=False)
+            top_idx = top_idx[:, 1:]
+            flat_idx = top_idx.squeeze() + n * torch.arange(n, out=torch.LongTensor()).cuda()
+            top1_is_same = torch.take(mask_pos, flat_idx)
+            metrics['prec'] = top1_is_same.float().mean().item()
+            metrics['dist_acc'] = (dist_n > dist_p).float().mean().item()
+            metrics['dist_sm'] = (dist_n > dist_p + self.margin).float().mean().item()
+            metrics['nonzero_count'] = torch.nonzero(diff).size(0)
+            metrics['dist_p '] = dist_p.mean().item()
+            metrics['dist_n'] = dist_n.mean().item()
 
-        #print(loss.item(), prec.item())
+        if self.debug:
+            print('%.5f' % loss.item(), end=' ')
+            for k, v in metrics.items():
+                if k.startswith('non'):
+                    print('%s: %4d' % (k, v), end=', ')
+                else:
+                    print('%s: %.5f' % (k, v), end=', ')
+            print()
 
-        return loss, prec
+        return loss, metrics
 
